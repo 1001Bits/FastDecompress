@@ -8,6 +8,6 @@ namespace FastDecompress
     //   - LZ4 v1.10.0 (latest) for BSA asset decompression
     //
     // Supports Skyrim SE (1.5.97), AE (1.6.x), and VR (1.4.15).
-    inline constexpr const char* kVersion = "1.2.0";
+    inline constexpr const char* kVersion = "1.4.0";
     void Install();
 }

@@ -7,6 +7,9 @@
 #include <immintrin.h> // AVX2 + prefetch intrinsics
 #include <detours/detours.h>
 
+#include <algorithm>
+#include <vector>
+
 namespace FastDecompress
 {
     // ========================================================================
@@ -620,6 +623,121 @@ namespace FastDecompress
         s_enableStats = GetPrivateProfileIntA("General", "bEnableLogging", 0, iniPath.string().c_str()) != 0;
     }
 
+    // ========================================================================
+    // Startup self-test — round-trip every replacement codec path against a
+    // known buffer BEFORE any hook is installed. If a single byte disagrees,
+    // hooks are NOT installed and the game keeps its stock decompressors.
+    // This is the "fail closed" guarantee for big modpacks: a bad build,
+    // a CPU without the expected ISA behavior, or a miscompiled dependency
+    // degrades to vanilla speed instead of corrupted assets.
+    // ========================================================================
+    static bool RunSelfTest()
+    {
+        // Repetitive but non-trivial content (compressible, multiple block types).
+        std::vector<std::uint8_t> original(96 * 1024);
+        std::uint32_t rng = 0x12345678;
+        for (std::size_t i = 0; i < original.size(); ++i) {
+            if ((i / 977) % 3 == 0) {
+                original[i] = static_cast<std::uint8_t>(i & 0x3F);        // runs
+            } else {
+                rng = rng * 1664525u + 1013904223u;                        // noise
+                original[i] = static_cast<std::uint8_t>(rng >> 24);
+            }
+        }
+
+        // --- zlib path (compress with zlib-ng, verify both decoders) ---
+        uLongf zBound = compressBound(static_cast<uLong>(original.size()));
+        std::vector<std::uint8_t> zbuf(zBound);
+        if (compress2(zbuf.data(), &zBound, original.data(),
+                      static_cast<uLong>(original.size()), 6) != Z_OK) {
+            logger::error("SelfTest: compress2 failed");
+            return false;
+        }
+
+        std::vector<std::uint8_t> out(original.size());
+
+        // libdeflate one-shot (the form-decompression fast path)
+        {
+            std::size_t outBytes = 0;
+            auto* d = libdeflate_alloc_decompressor();
+            if (!d) { logger::error("SelfTest: libdeflate alloc failed"); return false; }
+            auto r = libdeflate_zlib_decompress(d, zbuf.data(), zBound,
+                                                out.data(), out.size(), &outBytes);
+            libdeflate_free_decompressor(d);
+            if (r != LIBDEFLATE_SUCCESS || outBytes != original.size() ||
+                std::memcmp(out.data(), original.data(), original.size()) != 0) {
+                logger::error("SelfTest: libdeflate round-trip mismatch (r={}, {} bytes)",
+                    static_cast<int>(r), outBytes);
+                return false;
+            }
+        }
+
+        // zlib-ng streaming inflate (the streaming path), chunked input+output
+        {
+            std::fill(out.begin(), out.end(), 0);
+            z_stream strm{};
+            if (inflateInit2_(&strm, 15, ZLIB_VERSION,
+                              static_cast<int>(sizeof(z_stream))) != Z_OK) {
+                logger::error("SelfTest: inflateInit2_ failed");
+                return false;
+            }
+            strm.next_in = zbuf.data();
+            strm.avail_in = static_cast<uInt>(zBound);
+            int ret = Z_OK;
+            std::size_t produced = 0;
+            while (ret != Z_STREAM_END && produced < out.size()) {
+                strm.next_out = out.data() + produced;
+                strm.avail_out = static_cast<uInt>(
+                    (std::min)(std::size_t(4096), out.size() - produced));
+                ret = inflate(&strm, Z_NO_FLUSH);
+                if (ret != Z_OK && ret != Z_STREAM_END) break;
+                produced = strm.total_out;
+            }
+            inflateEnd(&strm);
+            if (ret != Z_STREAM_END || produced != original.size() ||
+                std::memcmp(out.data(), original.data(), original.size()) != 0) {
+                logger::error("SelfTest: zlib-ng streaming round-trip mismatch (ret={})", ret);
+                return false;
+            }
+        }
+
+        // LZ4 (BSA asset path) — plain and dictionary variants
+        {
+            const int srcSize = static_cast<int>(original.size());
+            std::vector<char> lbuf(LZ4_compressBound(srcSize));
+            const int lz = LZ4_compress_default(
+                reinterpret_cast<const char*>(original.data()), lbuf.data(),
+                srcSize, static_cast<int>(lbuf.size()));
+            if (lz <= 0) { logger::error("SelfTest: LZ4 compress failed"); return false; }
+
+            std::fill(out.begin(), out.end(), 0);
+            if (LZ4_decompress_safe(lbuf.data(), reinterpret_cast<char*>(out.data()),
+                                    lz, srcSize) != srcSize ||
+                std::memcmp(out.data(), original.data(), original.size()) != 0) {
+                logger::error("SelfTest: LZ4_decompress_safe round-trip mismatch");
+                return false;
+            }
+
+            // Dict variant: decompress the second half using the first as dict
+            const int half = srcSize / 2;
+            std::vector<char> lbuf2(LZ4_compressBound(half));
+            const int lz2 = LZ4_compress_default(
+                reinterpret_cast<const char*>(original.data()) + half, lbuf2.data(),
+                half, static_cast<int>(lbuf2.size()));
+            if (lz2 <= 0) { logger::error("SelfTest: LZ4 compress (dict test) failed"); return false; }
+            std::fill(out.begin(), out.end(), 0);
+            if (LZ4_decompress_safe_usingDict(
+                    lbuf2.data(), reinterpret_cast<char*>(out.data()), lz2, half,
+                    reinterpret_cast<const char*>(original.data()), half) != half ||
+                std::memcmp(out.data(), original.data() + half, half) != 0) {
+                logger::error("SelfTest: LZ4_decompress_safe_usingDict round-trip mismatch");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     void Install()
     {
         LoadINI();
@@ -628,6 +746,16 @@ namespace FastDecompress
         QueryPerformanceFrequency(&freq);
         s_qpcFreq = freq.QuadPart;
         s_installTime = QpcNow();
+
+        if constexpr (!BASELINE_MODE) {
+            if (!RunSelfTest()) {
+                logger::error("FastDecompressSkyrim: codec self-test FAILED — "
+                              "hooks NOT installed, game keeps its stock decompressors");
+                return;
+            }
+            logger::info("FastDecompressSkyrim: codec self-test passed "
+                         "(libdeflate one-shot, zlib-ng streaming, LZ4 plain+dict)");
+        }
 
         const bool isVR = REL::Module::IsVR();
         s_isVR = isVR;
@@ -771,21 +899,33 @@ namespace FastDecompress
             logger::error("DetourTransactionCommit failed: error {}", err);
         }
 
-        // Hook extra VR inflate clusters (cluster 2+) via additional transactions
+        // Hook extra VR inflate clusters (cluster 2+) via additional transactions.
+        // Trampoline pointers are kept in static storage (not stack locals):
+        // Detours rewrites the pointed-to slot with the trampoline address, and
+        // discarding it would leave no valid way to reach that cluster's
+        // original code. Passthrough calls in the shared hooks still route via
+        // cluster 1's trampoline — all clusters are byte-copies of the same
+        // zlib build, so state layouts are interchangeable — but the pointers
+        // are retained for debuggability and potential future detach.
+        static void* s_extraOrig[kMaxClusters][4] = {};
         for (int i = 1; i < s_clusterCount; i++) {
             auto& c = s_clusters[i];
-            auto* origInf   = reinterpret_cast<void*>(c.inflate);
-            auto* origEnd   = reinterpret_cast<void*>(c.inflateEnd);
-            auto* origInit  = reinterpret_cast<void*>(c.inflateInit2);
-            auto* origReset = reinterpret_cast<void*>(c.inflateReset);
+            s_extraOrig[i][0] = reinterpret_cast<void*>(c.inflate);
+            s_extraOrig[i][1] = reinterpret_cast<void*>(c.inflateEnd);
+            s_extraOrig[i][2] = reinterpret_cast<void*>(c.inflateInit2);
+            s_extraOrig[i][3] = reinterpret_cast<void*>(c.inflateReset);
 
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&origInf,   reinterpret_cast<void*>(&Hook_inflate));
-            DetourAttach(&origEnd,   reinterpret_cast<void*>(&Hook_inflateEnd));
-            DetourAttach(&origInit,  reinterpret_cast<void*>(&Hook_inflateInit));
-            DetourAttach(&origReset, reinterpret_cast<void*>(&Hook_inflateReset));
-            DetourTransactionCommit();
+            DetourAttach(&s_extraOrig[i][0], reinterpret_cast<void*>(&Hook_inflate));
+            DetourAttach(&s_extraOrig[i][1], reinterpret_cast<void*>(&Hook_inflateEnd));
+            DetourAttach(&s_extraOrig[i][2], reinterpret_cast<void*>(&Hook_inflateInit));
+            DetourAttach(&s_extraOrig[i][3], reinterpret_cast<void*>(&Hook_inflateReset));
+            LONG extraErr = DetourTransactionCommit();
+            if (extraErr != NO_ERROR) {
+                logger::error("inflate cluster {} Detours commit failed: {}", i + 1, extraErr);
+                continue;
+            }
             logger::info("inflate cluster {} hooked via Detours", i + 1);
         }
 
@@ -798,18 +938,30 @@ namespace FastDecompress
             hooked, s_clusterCount, s_lz4Hooked ? "yes" : "no",
             s_lz4GenericHooked ? "yes" : "no");
 
-        // Stats logging thread: only spawn if stats are enabled
+        // Stats logging thread: only spawn if stats are enabled.
+        // s_stopLogging is flipped by an atexit handler so the detached thread
+        // stops logging once CRT teardown begins — a detached thread calling
+        // into spdlog while its statics are being destroyed is a classic
+        // crash-on-exit. The 60s sleep is chunked into 1s slices so the flag
+        // is honored promptly instead of up to a minute later.
         if (s_enableStats) {
+            std::atexit([]() { s_stopLogging.store(true, std::memory_order_relaxed); });
             std::thread([]() {
+                auto sleepChecked = [](int seconds) -> bool {
+                    for (int i = 0; i < seconds; i++) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                        if (s_stopLogging.load(std::memory_order_relaxed))
+                            return false;
+                    }
+                    return true;
+                };
                 int intervals[] = {5, 5, 5, 5, 5, 5, 15, 15};
                 for (int s : intervals) {
-                    std::this_thread::sleep_for(std::chrono::seconds(s));
-                    if (s_stopLogging.load(std::memory_order_relaxed)) return;
+                    if (!sleepChecked(s)) return;
                     LogStats();
                 }
-                while (!s_stopLogging.load(std::memory_order_relaxed)) {
-                    std::this_thread::sleep_for(std::chrono::seconds(60));
-                    if (s_stopLogging.load(std::memory_order_relaxed)) return;
+                while (true) {
+                    if (!sleepChecked(60)) return;
                     LogStats();
                 }
             }).detach();

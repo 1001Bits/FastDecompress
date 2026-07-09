@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.23)
 
 set(NAME "FastDecompressSkyrim")
-set(VERSION 1.2.0)
+set(VERSION 1.4.0)
 
 message(">>> Start build for '${NAME}' v${VERSION}")
 
@@ -81,8 +81,8 @@ set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(lz4)
 # Optimize LZ4: direct memory access (safe on x86), AVX2 codegen
 target_compile_definitions(lz4_static PRIVATE LZ4_FORCE_MEMORY_ACCESS=2)
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    target_compile_options(lz4_static PRIVATE /arch:AVX2 /O2 /Oi /GL)
+if(MSVC)
+    target_compile_options(lz4_static PRIVATE /arch:AVX2 /O2 /Oi)
 endif()
 message(">>> LZ4 v1.10.0 built from source (AVX2 + direct memory access)")
 
@@ -118,9 +118,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     WIN32_LEAN_AND_MEAN
 )
 
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
+if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
-        /MP4
         /W3
         /permissive-
         /Zc:preprocessor
