@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A concise post-mortem of the Addictol decompression conflict: the March change, April release, evidence, and Faster Decompression 1.4.1 warning.">
+  <meta name="theme-color" content="#143c3c">
+  <title>Addictol and Faster Decompression: what happened</title>
+  <style>
+    :root { color-scheme: light; --ink: #172f35; --muted: #51656b; --accent: #0b6563; --line: #dce4e2; --paper: #fff; }
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 24px; }
+    body { margin: 0; color: var(--ink); background: #f1f4f2; font-family: "Segoe UI", system-ui, sans-serif; font-size: 17px; line-height: 1.75; }
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: #083f41; text-decoration-thickness: 2px; }
+    a:focus-visible, .table-scroll:focus-visible { outline: 3px solid #ac6614; outline-offset: 5px; border-radius: 2px; }
+    .skip { position: absolute; top: -100px; left: 20px; padding: 8px 14px; background: white; z-index: 5; }
+    .skip:focus { top: 12px; }
+    .masthead { max-width: 1000px; margin: auto; padding: 25px 26px; display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 14px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; }
+    .monogram { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: #143c3c; color: #fff; font-size: 13px; letter-spacing: -.04em; }
+    .masthead a { font-weight: 600; text-decoration: none; white-space: nowrap; }
+    main { max-width: 948px; margin: 0 auto 48px; background: var(--paper); border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 4px 4px 14px 14px; box-shadow: 0 12px 40px #203b3510; }
+    .hero { padding: 42px 58px 26px; }
+    .eyebrow { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .035em; margin: 0 0 16px; }
+    h1 { font-size: clamp(31px, 4.6vw, 48px); line-height: 1.14; letter-spacing: -.038em; margin: 0 0 24px; max-width: 750px; font-weight: 720; text-wrap: balance; }
+    p { margin: 16px 0; }
+    .hero p:last-child { margin-bottom: 0; font-size: 18px; color: #334e55; }
+    .hero strong { color: var(--ink); font-weight: 650; }
+    .jump-links { margin: 0 58px; padding: 16px 0; display: flex; flex-wrap: wrap; gap: 8px 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 650; }
+    .jump-links a { text-decoration: none; }
+    .article-body { padding: 0 58px 28px; }
+    h2 { font-size: 25px; line-height: 1.3; letter-spacing: -.02em; margin: 38px 0 15px; font-weight: 680; }
+    h2 + p { margin-top: 0; }
+    strong { font-weight: 650; }
+    code { font-family: Consolas, "Cascadia Code", monospace; font-size: .88em; background: #edf2f1; border-radius: 4px; padding: .12em .28em; overflow-wrap: anywhere; }
+    pre { background: #edf2f1; border: 1px solid #dce6e3; border-radius: 8px; padding: 17px 20px; overflow-x: auto; line-height: 1.65; font-size: 16px; }
+    pre code { padding: 0; background: none; border-radius: 0; }
+    .table-scroll { overflow-x: auto; margin: 23px 0; border: 1px solid var(--line); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.65; }
+    th, td { text-align: left; padding: 14px 18px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { background: #edf3f0; font-weight: 700; font-size: 13px; letter-spacing: .025em; }
+    td:first-child { width: 170px; }
+    tr:last-child td { border-bottom: 0; }
+    #what-the-overlap-could-do + p + ul { padding: 0; margin: 22px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; list-style: none; }
+    #what-the-overlap-could-do + p + ul li { margin: 0; padding: 20px 21px; border: 1px solid #e4d9bc; border-top: 3px solid #b68326; border-radius: 6px; background: #fdfaf2; font-size: 15.5px; line-height: 1.75; }
+    #what-the-overlap-could-do + p + ul li > strong:first-child { display: block; color: #654715; margin-bottom: 9px; font-size: 16px; }
+    footer { padding: 19px 58px; background: #f7f9f8; border-top: 1px solid var(--line); border-radius: 0 0 14px 14px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 700px) {
+      body { font-size: 16px; }
+      .masthead { padding: 18px 20px; }
+      .project-prefix { display: none; }
+      main { margin-bottom: 0; border-left: 0; border-right: 0; border-radius: 0; box-shadow: none; }
+      .hero { padding: 29px 23px 24px; }
+      .hero p:last-child { font-size: 17px; }
+      .eyebrow { font-size: 11px; line-height: 1.7; }
+      .jump-links { margin: 0 23px; gap: 8px 20px; }
+      .article-body { padding: 0 23px 23px; }
+      h2 { font-size: 23px; margin-top: 32px; }
+      #what-the-overlap-could-do + p + ul { grid-template-columns: 1fr; }
+      th, td { padding: 12px; }
+      td:first-child { width: 115px; }
+      table { font-size: 14px; }
+      footer { padding: 18px 23px; border-radius: 0; }
+    }
+    @media print {
+      body { font-size: 11pt; background: white; }
+      .masthead, .jump-links, .skip, footer { display: none; }
+      main { margin: 0; max-width: none; border: 0; box-shadow: none; }
+      .hero, .article-body { padding: 0; }
+      h1 { font-size: 28pt; }
+      h2 { font-size: 17pt; break-after: avoid; }
+      .hero p:last-child { font-size: 12pt; }
+      pre, tr { break-inside: avoid; }
+      .table-scroll { overflow: visible; }
+      #what-the-overlap-could-do + p + ul { display: block; }
+      #what-the-overlap-could-do + p + ul li { margin-bottom: 10px; break-inside: avoid; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#report">Skip to report</a>
+  <div class="masthead">
+    <div class="brand"><span class="monogram" aria-hidden="true">FD</span>Faster Decompression</div>
+    <a href="https://github.com/1001Bits/FastDecompress"><span class="project-prefix">Project on </span>GitHub &#8599;</a>
+  </div>
+  <main id="report">
+    <article>
+      <header class="hero">
+        <p class="eyebrow">Investigation post-mortem · Faster Decompression 1.4.1 · 9 September 2026</p>
+        <h1 id="addictol-and-faster-decompression-what-happened">Addictol and Faster Decompression: what happened</h1>
+<p><strong>This investigation traced the decompression conflict to a change in Addictol's GitHub code on 19 March 2026, 8 days after Faster Decompression's release. That change made Addictol hook the same inflate function already hooked by Faster Decompression. The public 1.2 release followed on 1 April, introducing the crash risk when both decompression features were enabled. The warning in Faster Decompression 1.4.1 makes that conflict visible and prevents overlapping hooks.</strong></p>
+
+      </header>
+      <nav class="jump-links" aria-label="Report sections">
+        <a href="#when-compatibility-changed">Timeline</a>
+        <a href="#what-the-overlap-could-do">The two failure modes</a>
+        <a href="#why-1.4.1-now-warns">The 1.4.1 warning</a>
+      </nav>
+      <div class="article-body">
+        <h2 id="why-the-investigation-began">Why the investigation began</h2>
+<p>Compatibility testing before Faster Decompression's <strong>11 March</strong> release appeared successful with Addictol <strong>1.1</strong>, the latest published version at the time. That result informed the initial compatibility assessment when the combination was questioned in April. <a href="https://www.nexusmods.com/fallout4/mods/102435">Faster Decompression release date</a>, <a href="https://www.nexusmods.com/fallout4/mods/84214?tab=files">Addictol old files</a>.</p>
+<p>A later Linux report, with a log dated <strong>18 July</strong>, showed Faster Decompression 1.3 on Fallout 4 1.11.221 failing to find its required decompression code:</p>
+<pre><code class="language-text">could not find any inflate cluster!
+</code></pre>
+<p>The log established failed activation. This investigation examined the source history and older binaries to determine what had changed since the earlier compatibility test.</p>
+<h2 id="when-compatibility-changed">When compatibility changed</h2>
+<div class="table-scroll" tabindex="0" role="region" aria-label="Compatibility timeline"><table>
+<thead>
+<tr>
+<th>Date</th>
+<th>What changed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Before 19 March</strong></td>
+<td>Addictol accelerated two calls in the form-loading code. It left the shared <code>inflate</code> function entry untouched, allowing Faster Decompression's separate scan to find it.</td>
+</tr>
+<tr>
+<td><strong>19 March 2026</strong></td>
+<td>Addictol replaced those call-site hooks with a hook on the shared <code>inflate</code> function itself, for both OG and NG/AE. Both mods now targeted that entry.</td>
+</tr>
+<tr>
+<td><strong>1 April 2026</strong></td>
+<td>The first listed Addictol <strong>1.2</strong> release became publicly available with the shared-function rewrite.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The code change is visible in <a href="https://github.com/Dear-Modding-FO4/Addictol/commit/c451e4100563976fbb0d25af9180599efe0d68ce">Addictol's 19 March commit</a>; the release date is in the <a href="https://www.nexusmods.com/fallout4/mods/84214?category=archived&amp;tab=files">Nexus archive</a>. The earlier test could not establish compatibility with this later implementation.</p>
+<h2 id="what-the-overlap-could-do">What the overlap could do</h2>
+<p>With the older implementations, initialization order could cause two different problems:</p>
+<ul>
+<li><strong>Addictol first:</strong> its hook changed the bytes Faster Decompression 1.2/1.3 expected. Faster Decompression's scanner could reject the modified function and install no decompression hooks. The game could continue, with the failure visible only in the log.</li>
+<li><strong>Faster Decompression first:</strong> the older Addictol implementation could overwrite Faster Decompression's hook. Its saved fallback could contain an incorrectly copied relative jump, sending execution to the wrong address when fallback was needed. Some decodes could succeed, while a later fallback could crash the game.</li>
+</ul>
+<p>Addictol's <a href="https://github.com/Dear-Modding-FO4/Addictol/commit/189bc43e4ec8db3f736993ca448e2e9405959383">3 August source change</a> added a check for changes to the game's function. If Faster Decompression hooked it first, Addictol builds containing this check skip the Addictol decompression hook and leave Faster Decompression's hook in place. Only one decompression feature runs; their benefits are not combined.</p>
+<h2 id="why-1.4.1-now-warns">Why 1.4.1 now warns</h2>
+<p>Players should know when Faster Decompression is inactive. Version 1.4.1 checks Addictol's effective <code>bLibDeflate</code> setting before installing any hooks, including when Addictol will load later.</p>
+<p>If the setting is enabled, Faster Decompression displays the warning and installs none of its hooks. Startup can continue after <strong>OK</strong>. The plugin does not edit Addictol's settings. This avoids relying on DLL order and gives players a clear resolution.</p>
+<p><strong>To keep both mods installed and use Faster Decompression</strong>, set this in <code>Data/F4SE/Plugins/AddictolCustom.toml</code>, then restart:</p>
+<pre><code class="language-toml">[Patches]
+bLibDeflate = false
+</code></pre>
+<p>If <code>[Patches]</code> already exists, edit the setting there. Addictol's other features can remain enabled according to their own compatibility requirements. Addictol Crash Logger alone does not trigger this warning.</p>
+
+      </div>
+    </article>
+    <footer>
+      <span>Faster Decompression &middot; Investigation record</span>
+      <a href="addictol-compatibility.md">Markdown edition for GitHub</a>
+    </footer>
+  </main>
+</body>
+</html>
