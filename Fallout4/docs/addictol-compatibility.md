@@ -33,7 +33,7 @@ With the older implementations, initialization order could cause two different p
 - **Addictol first:** its hook changed the bytes Faster Decompression 1.2/1.3 expected. Faster Decompression's scanner could reject the modified function and install no decompression hooks. The game could continue, with the failure visible only in the log.
 - **Faster Decompression first:** the older Addictol implementation could overwrite Faster Decompression's hook. Its saved fallback could contain an incorrectly copied relative jump, sending execution to the wrong address when fallback was needed. Some decodes could succeed, while a later fallback could crash the game.
 
-Addictol's [3 August source change](https://github.com/Dear-Modding-FO4/Addictol/commit/189bc43e4ec8db3f736993ca448e2e9405959383) added a check for changes to the game's function. If Faster Decompression hooked it first, Addictol builds containing this check skip the Addictol decompression hook and leave Faster Decompression's hook in place. Only one decompression feature runs; their benefits are not combined.
+Addictol's [3 August source change](https://github.com/Dear-Modding-FO4/Addictol/commit/189bc43e4ec8db3f736993ca448e2e9405959383) adds a check for changes to the game's function. If Faster Decompression hooked it first, Addictol builds containing this check skip the Addictol decompression hook and leave Faster Decompression's hook in place. Only one decompression feature runs; their benefits are not combined. This has however not been released until now.
 
 ## Why 1.4.1 now warns
 
